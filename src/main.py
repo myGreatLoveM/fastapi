@@ -3,6 +3,9 @@ from fastapi.params import Body
 from pydantic import BaseModel
 from typing import Optional
 from random import randrange
+import psycopg2
+from psycopg2.extras import RealDictCursor
+import time
 
 app = FastAPI()
 
@@ -13,69 +16,72 @@ class Post(BaseModel):
     published: bool = True
     rating: Optional[int] = None
 
-# in-memory, not persistent
-my_posts = [
-    {'id': 1, 'title': 'python', 'content': 'AI/ML is future'},
-    {'id': 2, 'title': 'javascript', 'content': 'Complex frontend development'},
-    {'id': 3, 'title': 'flutter', 'content': 'Hybrid app development'},
-]
+while True:
+    try:
+        conn = psycopg2.connect(host='localhost', database='fastapi',
+                                user='postgres', password='12433', cursor_factory=RealDictCursor)
+        curr = conn.cursor()
+        print('Database connection established')
+        break
+    except Exception as error:
+        print(error)
+        print('Error connecting to database')
+        time.sleep(3)
 
-def find_post(id):
-    for post in my_posts:
-        if post['id'] == id:
-            return post 
-
-def find_post_index(id):
-    for i, post in enumerate(my_posts):
-        if post['id'] == id:
-            return i
-    return None
 
 @app.get('/')
 def home():
     return {'message': 'ok'}
 
 # get all posts
-@app.get('/posts')
+@app.get('/posts', status_code=status.HTTP_200_OK)
 def get_posts():
-    return {'data': my_posts}
+    curr.execute('''SELECT * FROM posts''')
+    posts = curr.fetchall()
+    print(posts)
+    return {'data': posts}
 
 # create a new post
 @app.post('/posts', status_code=status.HTTP_201_CREATED)
-def create_post(data: Post):
-    new_post = data.model_dump()
-    new_post['id'] = randrange(0, 10000000)
-    my_posts.append(new_post)
-    return {'data': new_post}
+def create_post(post: Post):
+    curr.execute(''' INSERT INTO posts (title, content) VALUES (%s, %s) RETURNING * ''', (post.title, post.content))
+    new_post = curr.fetchone()
+    conn.commit()
+    return {'message': 'New post created successfully', 'data': new_post}
 
 # get a particular post
 @app.get('/posts/{id}')
 def get_post(id: int):
-    my_post = find_post(id)
-    if not my_post:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'No such post exist with id : {id}')
-    return {'message': f'post {id}', 'data': my_post}
+    curr.execute(''' SELECT * FROM posts WHERE id = %s ''', (str(id),))
+    post = curr.fetchone()
+    print(post)
+    if not post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f'No such post exist with id : {id}')
+    return {'message': f'post {id}', 'data': post}
 
 # delete a post
 @app.delete('/posts/{id}', status_code=status.HTTP_204_NO_CONTENT)
 def delete_post(id: int):
-    index = find_post_index(id)
+    curr.execute(''' DELETE FROM posts WHERE id = %s RETURNING *''', (str(id),))
+    deleted_post = curr.fetchone()
+    conn.commit()
 
-    if index == None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'No such post exist with id : {id}')
-    
-    my_posts.pop(index)
+    if not deleted_post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f'No such post exist with id : {id}')
+
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 # update a post
 @app.put('/posts/{id}')
-def update_post(id: int, data: Post):
-    index = find_post_index(id)
+def update_post(id: int, post: Post):
+    curr.execute(''' UPDATE posts SET title = %s, content = %s WHERE id = %s RETURNING * ''', (post.title, post.content, str(id)))
+    updated_post = curr.fetchone()
+    conn.commit()
 
-    if index == None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'No such post exist with id : {id}')
-    
-    post = data.model_dump()
-    post['id'] = id
-    my_posts[index] = post
-    return {'message': f'post {id} updated', 'data': post}
+    if not updated_post:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f'No such post exist with id : {id}')
+
+    return {'message': f'post {id} updated', 'data': updated_post}
